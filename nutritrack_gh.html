@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#0f172a">
+    <title>NutriTrack — Сканирование</title>
+    <script src="crypto-js.min.js"></script>
+    <script src="https://unpkg.com/quagga@0.12.1/dist/quagga.min.js"></script>
+    <style>
+        :root {
+            --bg: #f8fafc; --card: #ffffff; --text: #0f172a; --muted: #64748b;
+            --bar-bg: #e2e8f0; --c-low: #3b82f6; --c-mid: #10b981; --c-high: #f59e0b; --c-over: #ef4444;
+            --shadow: 0 4px 16px rgba(0,0,0,0.06); --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, sans-serif;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+        body { font-family: var(--font); background: var(--bg); color: var(--text); height: 100dvh; overflow: hidden; touch-action: manipulation; }
+        .app { display: flex; flex-direction: column; height: 100dvh; }
+        
+        /* ШАПКА: 25% - ПРОГРЕСС-БАРЫ */
+        .summary { flex: 0 0 25dvh; padding: 10px 20px 12px; background: var(--card); border-radius: 0 0 24px 24px; box-shadow: var(--shadow); overflow: hidden; display: flex; flex-direction: column; justify-content: center; }
+        .bar-row { margin-bottom: 8px; }
+        .bar-row:last-child { margin-bottom: 0; }
+        .bar-header { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; margin-bottom: 3px; }
+        .bar-track { height: 8px; background: var(--bar-bg); border-radius: 6px; overflow: visible; position: relative; }
+        .bar-fill { height: 100%; border-radius: 6px; transition: width 0.3s ease, background 0.3s; }
+        .bar-fill.overflow { background-image: repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(255,255,255,0.25) 3px, rgba(255,255,255,0.25) 6px) !important; animation: pulse 2s infinite ease-in-out; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.8; } }
+        .bar-status { font-size: 11px; color: var(--muted); margin-top: 2px; text-align: right; }
+        .bar-status.over { color: var(--c-over); font-weight: 600; }
+        
+        /* ЦЕНТР: 45% - КАРТОЧКА ПРОДУКТА */
+        .action { flex: 0 0 45dvh; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 16px; position: relative; }
+        .card {
+            background: var(--card); border-radius: 20px; padding: 20px; width: 100%; max-width: 340px;
+            box-shadow: var(--shadow); transform: scale(0.94); opacity: 0;
+            transition: all 0.25s cubic-bezier(0.4,0,0.2,1); display: flex; align-items: center; gap: 16px;
+        }
+        .card.active { transform: scale(1); opacity: 1; }
+        .c-emoji { font-size: 44px; line-height: 1; width: 56px; text-align: center; }
+        .c-info h2 { font-size: 16px; font-weight: 700; margin-bottom: 4px; min-height: 20px; }
+        .c-info p { font-size: 13px; color: var(--muted); margin-bottom: 3px; }
+        .c-info span { color: var(--c-mid); font-weight: 600; }
+        .loader { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 6px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .btn-cancel { margin-top: 16px; padding: 13px 32px; border: none; background: #f1f5f9; color: var(--muted); font-size: 14px; font-weight: 500; border-radius: 13px; cursor: pointer; opacity: 0; transform: translateY(8px); transition: all 0.2s; }
+        .btn-cancel.show { opacity: 1; transform: translateY(0); }
+        .btn-cancel:active { background: #e2e8f0; transform: scale(0.97); }
+        .toast { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(0.85); background: rgba(15,23,42,0.94); color: #fff; padding: 11px 20px; border-radius: 20px; font-size: 14px; font-weight: 600; opacity: 0; transition: all 0.2s; pointer-events: none; backdrop-filter: blur(6px); }
+        .toast.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+        
+        /* НИЗ: 30% - КАМЕРА + BLE */
+        .controls { flex: 0 0 30dvh; display: flex; flex-direction: column; justify-content: flex-end; padding: 12px 20px 20px; overflow: hidden; }
+        .cam-box { flex: 1; background: #000; border-radius: 16px; overflow: hidden; position: relative; margin-bottom: 10px; }
+        #cameraContainer { width: 100%; height: 100%; object-fit: cover; }
+        .cam-status, .ble-status { text-align: center; font-size: 13px; padding: 8px 12px; border-radius: 12px; cursor: pointer; transition: background 0.2s; }
+        .cam-status { background: #f1f5f9; color: var(--muted); margin-bottom: 6px; }
+        .ble-status { background: #eff6ff; color: #3b82f6; font-weight: 500; }
+        .ble-status.connected { background: #ecfdf5; color: #10b981; }
+        .ble-status.error { background: #fef2f2; color: #ef4444; }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <header class="summary" id="summary">Загрузка...</header>
+        <main class="action">
+            <div class="card" id="card">
+                <div class="c-emoji" id="cEmoji">🍽️</div>
+                <div class="c-info">
+                    <h2 id="cName">—</h2>
+                    <p id="cMeta">Сканируйте штрих-код</p>
+                    <p id="cKcal">—</p>
+                </div>
+            </div>
+            <button class="btn-cancel" id="cancelBtn">Отмена</button>
+            <div class="toast" id="toast"></div>
+        </main>
+        <footer class="controls">
+            <div class="cam-box"><div id="cameraContainer"></div></div>
+            <div class="cam-status" id="camStatus">Запуск...</div>
+            <div class="ble-status" id="bleStatus">🔗 Нажмите чтобы подключить весы</div>
+        </footer>
+    </div>
+    
+    <script>
+        // ==================== XOR DECODE UTILITY ====================
+        function xorDecode(encoded, key) {
+            key = key || 0x42;
+            const str = CryptoJS.enc.Base64.parse(encoded).toString(CryptoJS.enc.Utf8);
+            let result = '';
+            for (let i = 0; i < str.length; i++) {
+                result += String.fromCharCode(str.charCodeAt(i) ^ key);
+            }
+            return result;
+        }
+        
+        // ==================== CONFIGURATION (OBFUSCATED) ====================
+        const XOR_KEY = 0x42;
+        const API_URL_ENC = 'KjY2MjF4bW0qKykrbzEnMDRsMDdtMScjMCEqHSMsJjAtKyZsMioy';
+        const HASH_ENC = 'dnR7AAEBBnJ3AAd0ewd0BgMDdnNzcnJzBgB6cHdzBgN6BgB2dXoBAHt1BHp6BntycARwB3YDcnEDcHcDAHVwAw==';
+        const HMAC_KEY_ENC = 'c3F0dXRxd3pzJHt0';
+        const AES_KEY_ENC = 'IyQhc3cjJCB0dXZ6cyR7dA==';
+        
+        const API_URL = xorDecode(API_URL_ENC, XOR_KEY);
+        const HASH = xorDecode(HASH_ENC, XOR_KEY);
+        const HMAC_KEY = xorDecode(HMAC_KEY_ENC, XOR_KEY);
+        const AES_KEY = xorDecode(AES_KEY_ENC, XOR_KEY);
+        const ANDROID_ID = 'gh_' + Math.random().toString(36).substring(2, 10);
+        
+        const BLE_SERVICE = '0000fff0-0000-1000-8000-00805f9b34fb';
+        const BLE_CHAR_TX = '0000fff1-0000-1000-8000-00805f9b34fb';
+        
+        // ==================== GOALS & STATE ====================
+        const GOALS = { kcal: 1800, p: 120, f: 70, c: 220 };
+        let daily = { kcal: 840, p: 48, f: 31, c: 115 };
+        const state = { weight: 0, weightStable: false, product: null, committed: false, autoTimer: null };
+        
+        // ==================== DOM ====================
+        const els = {
+            summary: document.getElementById('summary'), card: document.getElementById('card'),
+            cEmoji: document.getElementById('cEmoji'), cName: document.getElementById('cName'),
+            cMeta: document.getElementById('cMeta'), cKcal: document.getElementById('cKcal'),
+            cancelBtn: document.getElementById('cancelBtn'), toast: document.getElementById('toast'),
+            camStatus: document.getElementById('camStatus'), bleStatus: document.getElementById('bleStatus'),
+            cameraContainer: document.getElementById('cameraContainer')
+        };
+        
+        // ==================== RENDER ====================
+        function renderBars() {
+            els.summary.innerHTML = '';
+            const metrics = [
+                { key: 'kcal', label: '🔥 Калории', cur: daily.kcal, goal: GOALS.kcal },
+                { key: 'p', label: '🥩 Белки', cur: daily.p, goal: GOALS.p },
+                { key: 'f', label: '🧈 Жиры', cur: daily.f, goal: GOALS.f },
+                { key: 'c', label: '🌾 Углеводы', cur: daily.c, goal: GOALS.c }
+            ];
+            metrics.forEach(m => {
+                const over = m.cur > m.goal;
+                const pct = Math.min((m.cur / m.goal) * 100, 100);
+                const val = over ? `+${Math.round(m.cur - m.goal)}` : `${Math.round(m.goal - m.cur)}`;
+                const suffix = over ? ' сверх' : ' осталось';
+                const color = over ? 'var(--c-over)' : pct < 60 ? 'var(--c-low)' : pct < 85 ? 'var(--c-mid)' : 'var(--c-high)';
+                els.summary.innerHTML += `
+                    <div class="bar-row">
+                        <div class="bar-header"><span>${m.label}</span><span>${Math.round(m.cur)} / ${m.goal}</span></div>
+                        <div class="bar-track"><div class="bar-fill ${over ? 'overflow' : ''}" style="width:${pct}%;background:${color}"></div></div>
+                        <div class="bar-status ${over ? 'over' : ''}">${val}${suffix}</div>
+                    </div>`;
+            });
+        }
+        
+        // ==================== CARD & STATE MACHINE ====================
+        function showCard() { els.card.classList.add('active'); els.cancelBtn.classList.add('show'); }
+        function hideCard() { els.card.classList.remove('active'); els.cancelBtn.classList.remove('show'); }
+        function showToast(msg, duration = 1600) {
+            els.toast.textContent = msg;
+            els.toast.classList.add('show');
+            setTimeout(() => els.toast.classList.remove('show'), duration);
+        }
+        
+        function evaluate() {
+            clearTimeout(state.autoTimer);
+            const { weight, product, weightStable } = state;
+            
+            if (!product && !weightStable) { hideCard(); return; }
+            
+            showCard();
+            
+            if (product) {
+                els.cEmoji.textContent = product.emoji || '🍽️';
+                els.cName.textContent = product.name;
+                
+                if (weight > 0 && weightStable) {
+                    const kcal = Math.round(product.kcal100 * weight / 100);
+                    const bju = `Б:${product.p100.toFixed(1)} Ж:${product.f100.toFixed(1)} У:${product.c100.toFixed(1)}`;
+                    els.cMeta.innerHTML = `⚖️ ${weight} г • ${bju}`;
+                    els.cKcal.textContent = `+${kcal}`;
+                    
+                    if (!state.committed) {
+                        state.autoTimer = setTimeout(() => commit(weight, product, kcal), 1400);
+                    }
+                } else {
+                    els.cMeta.innerHTML = `<span class="loader"></span> Ожидание весов...`;
+                    els.cKcal.textContent = `Б:${product.p100.toFixed(1)} Ж:${product.f100.toFixed(1)} У:${product.c100.toFixed(1)}`;
+                }
+            } else if (weightStable) {
+                els.cEmoji.textContent = '⚖️';
+                els.cName.textContent = 'Определяю...';
+                els.cMeta.innerHTML = `<span class="loader"></span> Поиск БЖУ... (${weight} г)`;
+                els.cKcal.textContent = '—';
+            }
+        }
+        
+        function commit(weight, product, kcal) {
+            if (state.committed) return;
+            state.committed = true;
+            daily.kcal += kcal;
+            daily.p += Math.round(product.p100 * weight / 100);
+            daily.f += Math.round(product.f100 * weight / 100);
+            daily.c += Math.round(product.c100 * weight / 100);
+            renderBars();
+            showToast('✅ Записано в дневник');
+            setTimeout(resetState, 1200);
+        }
+        
+        function resetState() {
+            state.weight = 0; state.product = null; state.committed = false; state.weightStable = false;
+            lastWeight = 0; stableCount = 0;
+            clearTimeout(state.autoTimer);
+            evaluate();
+        }
+        
+        // ==================== BLE SCALES ====================
+        let bleConnected = false, bluetoothDevice = null, gattServer = null, weightChar = null;
+        let lastWeight = 0, stableCount = 0;
+        const STABLE_THRESHOLD = 5;
+        const WEIGHT_CHANGE_THRESHOLD = 5;
+        
+        function setBLEStatus(msg, type) {
+            if (type === 'error') { els.bleStatus.textContent = msg; els.bleStatus.className = 'ble-status error'; }
+            else { els.bleStatus.textContent = bleConnected ? '✅ Весы подключены' : '🔗 Нажмите чтобы подключить весы'; els.bleStatus.className = 'ble-status ' + (bleConnected ? 'connected' : ''); }
+        }
+        
+        els.bleStatus.onclick = () => { if (!bleConnected) connectBLE(); };
+        
+        async function connectBLE() {
+            try {
+                setBLEStatus('🔍 Поиск весов QN-KS...', 'warn');
+                if (!('bluetooth' in navigator)) { setBLEStatus('❌ Web Bluetooth не поддерживается', 'error'); return; }
+                bluetoothDevice = await navigator.bluetooth.requestDevice({ filters: [{ name: 'QN-KS' }, { namePrefix: 'QN' }], optionalServices: [BLE_SERVICE] });
+                bluetoothDevice.addEventListener('gattserverdisconnected', onBLEDisconnect);
+                gattServer = await bluetoothDevice.gatt.connect();
+                const service = await gattServer.getPrimaryService(BLE_SERVICE);
+                weightChar = await service.getCharacteristic(BLE_CHAR_TX);
+                await weightChar.startNotifications();
+                weightChar.addEventListener('characteristicvaluechanged', handleWeightData);
+                bleConnected = true;
+                setBLEStatus('✅ Подключено! Получение веса...', 'ok');
+            } catch (err) {
+                console.error('BLE error:', err);
+                setBLEStatus('❌ Ошибка: ' + (err.message || err), 'error');
+                if (bluetoothDevice) { try { bluetoothDevice.gatt.disconnect(); } catch(e) {} }
+                bleConnected = false;
+            }
+        }
+        
+        function onBLEDisconnect() {
+            bleConnected = false; state.weightStable = false; state.weight = 0;
+            setBLEStatus('🔴 Отключено (нажмите для переподключения)', 'error');
+        }
+        
+        function handleWeightData(event) {
+            const bytes = new Uint8Array(event.target.value.buffer);
+            if (bytes.length < 12) return;
+            const weightRaw = (bytes[9] << 8) | bytes[10];
+            
+            if (state.weightStable && state.weight > 0) {
+                const diff = Math.abs(weightRaw - state.weight);
+                if (diff < WEIGHT_CHANGE_THRESHOLD && weightRaw > 0) { return; }
+                if (diff >= WEIGHT_CHANGE_THRESHOLD) {
+                    state.weightStable = false;
+                    stableCount = 0;
+                }
+            }
+            
+            if (Math.abs(weightRaw - lastWeight) <= 1) stableCount++; else stableCount = 0;
+            lastWeight = weightRaw;
+            
+            if (weightRaw > 0 && stableCount >= STABLE_THRESHOLD) {
+                if (!state.weightStable || state.weight !== weightRaw) {
+                    state.weightStable = true;
+                    state.weight = weightRaw;
+                    evaluate();
+                }
+            } else if (weightRaw === 0 && stableCount >= STABLE_THRESHOLD) {
+                // Zero stable - ignore
+            }
+        }
+        
+        // ==================== BARCODE SCANNER ====================
+        let lastBarcode = null;
+        let lastConfirmedBarcode = null;
+        let barcodeCount = 0;
+        const REQUIRED_CONSISTENT_READS = 2;
+        
+        function validateEAN13(barcode) {
+            if (barcode.length !== 13) return false;
+            const digits = barcode.split('').map(Number);
+            let sum = 0;
+            for (let i = 0; i < 12; i++) sum += digits[i] * (i % 2 === 0 ? 1 : 3);
+            const checksum = (10 - (sum % 10)) % 10;
+            return checksum === digits[12];
+        }
+        
+        function reportBarcodeResult(code) {
+            if (code.length !== 13) return false;
+            if (!validateEAN13(code)) return false;
+            if (code === lastConfirmedBarcode) return false;
+            
+            if (code !== lastBarcode) {
+                lastBarcode = code;
+                barcodeCount = 1;
+                els.camStatus.textContent = `📷 ${code} (1/2)...`;
+                return false;
+            }
+            
+            barcodeCount++;
+            if (barcodeCount < REQUIRED_CONSISTENT_READS) {
+                els.camStatus.textContent = `📷 ${code} (${barcodeCount}/2)...`;
+                return false;
+            }
+            
+            lastConfirmedBarcode = code;
+            els.camStatus.textContent = `✅ ${code}`;
+            lookupBarcode(code);
+            return true;
+        }
+        
+        function startBarcodeScan() {
+            if (typeof Quagga === 'undefined') {
+                els.camStatus.textContent = '❌ Сканирование не поддерживается';
+                return;
+            }
+            const container = document.getElementById('cameraContainer');
+            Quagga.init({
+                inputStream: { name: "Live", type: "LiveStream", target: container, constraints: { facingMode: "environment" } },
+                decoder: { readers: ['ean_reader'] },
+                locator: { patchSize: "medium" },
+                numOfWorkers: 0
+            }, function(err) {
+                if (err) { els.camStatus.textContent = '❌ Quagga: ' + err; return; }
+                Quagga.start();
+            });
+            Quagga.onDetected(function(result) {
+                if (result?.codeResult?.code) {
+                    reportBarcodeResult(result.codeResult.code);
+                }
+            });
+        }
+        
+        function stopBarcodeScan() {
+            if (typeof Quagga !== 'undefined' && Quagga._running) Quagga.stop();
+        }
+        
+        // ==================== PRODUCT LOOKUP ====================
+        let lookupInProgress = false;
+        
+        async function lookupBarcode(barcode) {
+            if (lookupInProgress) return;
+            lookupInProgress = true;
+            stopBarcodeScan();
+            state.product = null;
+            evaluate();
+            els.camStatus.textContent = '🔍 Поиск...';
+            
+            try {
+                const date = new Date().toISOString().slice(0,19).replace('T', ' ');
+                const hmacMessage = ANDROID_ID + date;
+                const hmac = CryptoJS.HmacSHA256(hmacMessage, HMAC_KEY).toString(CryptoJS.enc.Hex);
+                
+                const params = new URLSearchParams({
+                    produkt: barcode,
+                    id: '1',
+                    hash: HASH,
+                    client: ANDROID_ID,
+                    ver: '1',
+                    date: date,
+                    old: hmac
+                });
+                
+                const response = await fetch(API_URL + '?' + params.toString());
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const encrypted = await response.text();
+                console.log('[API] Encrypted response length:', encrypted.length);
+                
+                const decrypted = decryptResponse(encrypted);
+                if (!decrypted) { showToast('❌ Ошибка расшифровки', 2000); lookupInProgress = false; startBarcodeScan(); return; }
+                
+                console.log('[API] Decrypted:', decrypted.substring(0, 100));
+                
+                const parts = decrypted.split(';');
+                state.product = { emoji: '🍽️', name: parts[0] || 'Неизвестно', p100: parseFloat(parts[1]) || 0, f100: parseFloat(parts[2]) || 0, c100: parseFloat(parts[3]) || 0, kcal100: parseFloat(parts[4]) || 0 };
+                state.weightStable = false;
+                stableCount = 0;
+                lookupInProgress = false;
+                evaluate();
+                startBarcodeScan();
+            } catch (err) { console.error('Lookup error:', err); showToast('❌ Ошибка поиска', 2000); lookupInProgress = false; startBarcodeScan(); }
+        }
+        
+        function decryptResponse(encryptedBase64) {
+            try {
+                const cleanBase64 = encryptedBase64.replace(/\s/g, '');
+                const encryptedWA = CryptoJS.enc.Base64.parse(cleanBase64);
+                const iv = CryptoJS.lib.WordArray.create(encryptedWA.words.slice(0, 4));
+                const ciphertext = CryptoJS.lib.WordArray.create(encryptedWA.words.slice(4));
+                const key = CryptoJS.enc.Utf8.parse(AES_KEY);
+                
+                const decrypted = CryptoJS.AES.decrypt(
+                    { ciphertext: ciphertext },
+                    key,
+                    { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 }
+                );
+                
+                return CryptoJS.enc.Utf8.stringify(decrypted);
+            } catch (e) { console.error('[Decrypt] Error:', e); return null; }
+        }
+        
+        // ==================== HANDLERS ====================
+        els.cancelBtn.onclick = () => { resetState(); showToast('↩ Отменено', 1000); };
+        
+        // ==================== INITIALIZATION ====================
+        renderBars();
+        startBarcodeScan();
+        console.log('✅ NutriTrack initialized. API:', API_URL.substring(0,30)+'...');
+    </script>
+</body>
+</html>

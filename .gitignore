@@ -1,0 +1,7 @@
+# Ignore everything by default
+*
+
+# Allow only required files for GitHub Pages
+!.gitignore
+!nutritrack_gh.html
+!crypto-js.min.js
